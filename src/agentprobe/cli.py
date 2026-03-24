@@ -139,6 +139,51 @@ Examples:
     # === tags command ===
     subparsers.add_parser("tags", help="List payload tags")
 
+    # === attack command (adaptive) ===
+    attack_parser = subparsers.add_parser("attack",
+        help="Run LLM-powered adaptive red-teaming (AI vs AI)")
+    attack_parser.add_argument("endpoint", nargs="?",
+                               help="Target endpoint URL (optional if --config)")
+    attack_parser.add_argument("--config", dest="config_file",
+                               help="Load target config from JSON file")
+    attack_parser.add_argument("--sse", action="store_true",
+                               help="Target uses SSE streaming")
+    attack_parser.add_argument("--header", "-H", action="append", default=[], dest="headers",
+                               help="Target HTTP header (repeatable)")
+    attack_parser.add_argument("--cookie", dest="cookie_string",
+                               help="Target cookie string")
+    attack_parser.add_argument("--body", dest="body_template",
+                               help="Target body template JSON")
+    attack_parser.add_argument("--payload-path", dest="payload_path",
+                               help="Dot-notation path for payload in body")
+    attack_parser.add_argument("--response-path", dest="response_path",
+                               help="Dot-notation path for response extraction")
+    attack_parser.add_argument("--new-conv-endpoint", dest="new_conv_endpoint",
+                               help="Endpoint for creating new conversations (no ID)")
+    attack_parser.add_argument("--description", dest="target_description",
+                               default="An AI assistant",
+                               help="Description of the target agent for the attacker LLM")
+    attack_parser.add_argument("--attacker-api-base", dest="attacker_api_base",
+                               default="https://openrouter.ai/api/v1",
+                               help="Attacker LLM API base URL (default: OpenRouter)")
+    attack_parser.add_argument("--attacker-api-key", dest="attacker_api_key",
+                               help="Attacker LLM API key (or set ATTACKER_API_KEY env var)")
+    attack_parser.add_argument("--attacker-model", dest="attacker_model",
+                               default="openai/gpt-4o",
+                               help="Attacker LLM model (default: openai/gpt-4o)")
+    attack_parser.add_argument("--turns", type=int, default=10,
+                               help="Max conversation turns (default: 10)")
+    attack_parser.add_argument("--timeout", type=float, default=120.0,
+                               help="Request timeout in seconds (default: 120)")
+    attack_parser.add_argument("--delay", type=float, default=3.0,
+                               help="Delay between turns in seconds (default: 3)")
+    attack_parser.add_argument("--output-json", "-o", dest="json_output",
+                               help="Write results to JSON file")
+    attack_parser.add_argument("--log", dest="log_file",
+                               help="Write attack log to file")
+    attack_parser.add_argument("--no-color", action="store_true",
+                               help="Disable colored output")
+
     # === init command ===
     subparsers.add_parser("init", help="Generate a sample config file")
 
@@ -231,7 +276,8 @@ def cmd_tags(args: argparse.Namespace) -> None:
 def cmd_init(args: argparse.Namespace) -> None:
     """Generate a sample config file."""
     sample = {
-        "endpoint": "https://your-agent.example.com/api/chat",
+        "endpoint": "https://your-agent.example.com/api/chat/THREAD_ID",
+        "new_conversation_endpoint": "https://your-agent.example.com/api/chat",
         "mode": "sse",
         "headers": {
             "Origin": "https://your-app.example.com",
@@ -247,6 +293,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         },
         "payload_path": "params.question",
         "response_path": "message.response.data.answer.answer",
+        "target_description": "A product recommendation assistant for Flexcon label materials",
         "timeout": 60,
         "concurrency": 2,
         "delay": 2.0,
@@ -440,6 +487,196 @@ def cmd_scan(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_attack(args: argparse.Namespace) -> None:
+    """Run an adaptive LLM-powered attack."""
+    from .adaptive import AdaptiveScanner
+
+    # Load config
+    config: dict = {}
+    if args.config_file:
+        from .config import load_config
+        config = load_config(args.config_file)
+
+    endpoint = args.endpoint or config.get("endpoint")
+    if not endpoint:
+        _log("Error: endpoint is required")
+        sys.exit(1)
+
+    use_sse = args.sse or config.get("mode") == "sse"
+
+    # Parse headers
+    headers: dict[str, str] = config.get("headers", {})
+    for h in args.headers:
+        if ":" in h:
+            key, val = h.split(":", 1)
+            headers[key.strip()] = val.strip()
+
+    cookie_string = args.cookie_string or config.get("cookie")
+
+    # Attacker API key
+    attacker_key = args.attacker_api_key or os.environ.get("ATTACKER_API_KEY", "")
+    if not attacker_key:
+        _log("Error: attacker LLM API key required (--attacker-api-key or ATTACKER_API_KEY env var)")
+        sys.exit(1)
+
+    # Body template
+    body_template = config.get("body_template")
+    if args.body_template:
+        body_template = json.loads(args.body_template)
+
+    # New conversation endpoint
+    new_conv = args.new_conv_endpoint or config.get("new_conversation_endpoint")
+
+    use_color = not args.no_color and sys.stdout.isatty()
+
+    # Log file
+    log_f = None
+    if args.log_file:
+        log_f = open(args.log_file, "w", buffering=1)
+
+    BOLD = "\033[1m" if use_color else ""
+    RED = "\033[31m" if use_color else ""
+    GREEN = "\033[32m" if use_color else ""
+    YELLOW = "\033[33m" if use_color else ""
+    CYAN = "\033[36m" if use_color else ""
+    DIM = "\033[2m" if use_color else ""
+    RESET = "\033[0m" if use_color else ""
+
+    _log("", log_f)
+    _log(f"  {RED}🔴 AgentProbe v{__version__} — Adaptive Attack{RESET}", log_f)
+    _log(f"  Target:   {endpoint}", log_f)
+    _log(f"  Attacker: {args.attacker_model}", log_f)
+    _log(f"  Turns:    {args.turns}", log_f)
+    _log("", log_f)
+
+    async def on_turn(turn) -> None:
+        status = ""
+        if turn.findings:
+            status = f"{RED}🚨 LEAK{RESET}"
+        elif turn.refused:
+            status = f"{GREEN}✓ REFUSED{RESET}"
+        else:
+            status = f"{YELLOW}? UNCLEAR{RESET}"
+
+        _log(f"  Turn {turn.turn:>2}  {status}  ({turn.response_time_ms:.0f}ms)", log_f)
+        _log(f"  {CYAN}⟶ PROBE:{RESET} {turn.attacker_prompt[:120]}{'...' if len(turn.attacker_prompt) > 120 else ''}", log_f)
+
+        resp_preview = turn.target_response[:150].replace("\n", " ")
+        _log(f"  {DIM}⟵ RESP:  {resp_preview}{'...' if len(turn.target_response) > 150 else ''}{RESET}", log_f)
+
+        if turn.findings:
+            for f in turn.findings:
+                _log(f"  {RED}  Finding: {f.pattern_name}: {f.matched_text[:80]}{RESET}", log_f)
+
+        # Write full content to log
+        if log_f:
+            log_f.write(f"\n--- Turn {turn.turn} ---\n")
+            log_f.write(f"PROBE:\n{turn.attacker_prompt}\n\n")
+            log_f.write(f"RESPONSE:\n{turn.target_response}\n\n")
+            if turn.findings:
+                for f in turn.findings:
+                    log_f.write(f"FINDING: {f.pattern_name}: {f.matched_text}\n")
+            log_f.write("\n")
+            log_f.flush()
+
+        _log("", log_f)
+
+    scanner = AdaptiveScanner(
+        target_endpoint=endpoint,
+        target_headers=headers,
+        target_cookie=cookie_string,
+        target_body_template=body_template,
+        target_payload_path=args.payload_path or config.get("payload_path", "params.question"),
+        target_response_path=args.response_path or config.get("response_path"),
+        target_mode="sse" if use_sse else "json",
+        target_new_conversation_endpoint=new_conv,
+        target_description=args.target_description or config.get("target_description", "An AI assistant"),
+        attacker_api_base=args.attacker_api_base,
+        attacker_api_key=attacker_key,
+        attacker_model=args.attacker_model,
+        max_turns=args.turns,
+        timeout=args.timeout,
+        delay=args.delay,
+    )
+
+    result = asyncio.run(scanner.attack(on_turn=on_turn))
+
+    # Print summary
+    _log(f"  {'='*60}", log_f)
+    _log(f"  {BOLD}ADAPTIVE ATTACK SUMMARY{RESET}", log_f)
+    _log(f"  {'='*60}", log_f)
+    _log(f"  Total turns:    {len(result.turns)}", log_f)
+    _log(f"  Total time:     {result.total_time_ms/1000:.1f}s", log_f)
+    leaked = sum(1 for t in result.turns if t.findings)
+    refused = sum(1 for t in result.turns if t.refused and not t.findings)
+    _log(f"  Leaked:         {RED}{leaked}{RESET}" if leaked else f"  Leaked:         0", log_f)
+    _log(f"  Refused:        {GREEN}{refused}{RESET}", log_f)
+    _log("", log_f)
+
+    # Print LLM analysis
+    if result.llm_analysis and not result.llm_analysis.get("parse_error"):
+        analysis = result.llm_analysis
+        _log(f"  {BOLD}AI ANALYSIS{RESET}", log_f)
+        _log(f"  {'─'*60}", log_f)
+
+        if analysis.get("leaks"):
+            _log(f"  {RED}Leaks found:{RESET}", log_f)
+            for leak in analysis["leaks"]:
+                conf = leak.get("confidence", "?")
+                sev = leak.get("severity", "?")
+                _log(f"    [{sev.upper()}] ({conf}) Turn {leak.get('turn','?')}: {leak.get('detail','')}", log_f)
+
+        if analysis.get("inadvertent_clues"):
+            _log(f"\n  {YELLOW}Inadvertent clues:{RESET}", log_f)
+            for clue in analysis["inadvertent_clues"]:
+                _log(f"    • {clue}", log_f)
+
+        if analysis.get("defensive_techniques"):
+            _log(f"\n  {GREEN}Defensive techniques:{RESET}", log_f)
+            for tech in analysis["defensive_techniques"]:
+                _log(f"    ✓ {tech}", log_f)
+
+        if analysis.get("recommendations"):
+            _log(f"\n  Recommendations:", log_f)
+            for rec in analysis["recommendations"]:
+                _log(f"    → {rec}", log_f)
+
+        if analysis.get("overall_assessment"):
+            _log(f"\n  {BOLD}Assessment:{RESET} {analysis['overall_assessment']}", log_f)
+
+    elif result.llm_analysis:
+        _log(f"  Raw analysis: {result.llm_analysis.get('raw_analysis', 'N/A')[:500]}", log_f)
+
+    _log(f"\n  {'='*60}\n", log_f)
+
+    # JSON output
+    if args.json_output:
+        output = {
+            "type": "adaptive",
+            "total_turns": len(result.turns),
+            "total_time_ms": result.total_time_ms,
+            "turns": [
+                {
+                    "turn": t.turn,
+                    "attacker_prompt": t.attacker_prompt,
+                    "target_response": t.target_response[:1000],
+                    "response_time_ms": t.response_time_ms,
+                    "findings": [{"pattern": f.pattern_name, "match": f.matched_text[:100]} for f in t.findings],
+                    "refused": t.refused,
+                }
+                for t in result.turns
+            ],
+            "analysis": result.llm_analysis,
+            "error": result.error,
+        }
+        with open(args.json_output, "w") as f:
+            json.dump(output, f, indent=2)
+        _log(f"  JSON written to: {args.json_output}", log_f)
+
+    if log_f:
+        log_f.close()
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -450,6 +687,8 @@ def main() -> None:
 
     if args.command == "scan":
         cmd_scan(args)
+    elif args.command == "attack":
+        cmd_attack(args)
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "categories":
