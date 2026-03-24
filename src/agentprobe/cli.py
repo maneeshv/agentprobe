@@ -163,14 +163,16 @@ Examples:
     attack_parser.add_argument("--description", dest="target_description",
                                default="An AI assistant",
                                help="Description of the target agent for the attacker LLM")
+    attack_parser.add_argument("--attacker-provider", dest="attacker_provider",
+                               choices=["openai", "openrouter", "anthropic", "grok", "xai",
+                                        "gemini", "google", "together", "groq", "deepseek", "fireworks"],
+                               help="Attacker LLM provider (auto-configures API base + default model)")
     attack_parser.add_argument("--attacker-api-base", dest="attacker_api_base",
-                               default="https://openrouter.ai/api/v1",
-                               help="Attacker LLM API base URL (default: OpenRouter)")
+                               help="Attacker LLM API base URL (overrides provider preset)")
     attack_parser.add_argument("--attacker-api-key", dest="attacker_api_key",
                                help="Attacker LLM API key (or set ATTACKER_API_KEY env var)")
     attack_parser.add_argument("--attacker-model", dest="attacker_model",
-                               default="openai/gpt-4o",
-                               help="Attacker LLM model (default: openai/gpt-4o)")
+                               help="Attacker LLM model (overrides provider default)")
     attack_parser.add_argument("--turns", type=int, default=10,
                                help="Max conversation turns (default: 10)")
     attack_parser.add_argument("--timeout", type=float, default=120.0,
@@ -544,8 +546,13 @@ def cmd_attack(args: argparse.Namespace) -> None:
 
     _log("", log_f)
     _log(f"  {RED}🔴 AgentProbe v{__version__} — Adaptive Attack{RESET}", log_f)
+    # Resolve attacker display info
+    from .providers import PROVIDER_PRESETS
+    provider_name = args.attacker_provider or "openrouter"
+    attacker_model_display = args.attacker_model or PROVIDER_PRESETS.get(provider_name, {}).get("default_model", "auto")
+
     _log(f"  Target:   {endpoint}", log_f)
-    _log(f"  Attacker: {args.attacker_model}", log_f)
+    _log(f"  Attacker: {attacker_model_display} via {provider_name}", log_f)
     _log(f"  Turns:    {args.turns}", log_f)
     _log("", log_f)
 
@@ -591,7 +598,8 @@ def cmd_attack(args: argparse.Namespace) -> None:
         target_mode="sse" if use_sse else "json",
         target_new_conversation_endpoint=new_conv,
         target_description=args.target_description or config.get("target_description", "An AI assistant"),
-        attacker_api_base=args.attacker_api_base,
+        attacker_provider=args.attacker_provider,
+        attacker_api_base=args.attacker_api_base or "https://openrouter.ai/api/v1",
         attacker_api_key=attacker_key,
         attacker_model=args.attacker_model,
         max_turns=args.turns,
