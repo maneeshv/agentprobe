@@ -426,9 +426,22 @@ def get_payloads(
     category: str | None = None,
     severity: str | None = None,
     tag: str | None = None,
+    include_domain: str | None = None,
+    domain_only: bool = False,
 ) -> list[Payload]:
-    """Filter payloads by category, severity, or tag."""
-    results = PAYLOADS
+    """Filter payloads by category, severity, tag, or domain pack.
+
+    Args:
+        include_domain: Include domain-specific payloads (e.g. "flexcon")
+        domain_only: If True, only return domain-specific payloads
+    """
+    if domain_only and include_domain:
+        results = _get_domain_payloads(include_domain)
+    elif include_domain:
+        results = PAYLOADS + _get_domain_payloads(include_domain)
+    else:
+        results = PAYLOADS
+
     if category:
         results = [p for p in results if p.category == category]
     if severity:
@@ -436,6 +449,14 @@ def get_payloads(
     if tag:
         results = [p for p in results if tag in p.tags]
     return results
+
+
+def _get_domain_payloads(domain: str) -> list[Payload]:
+    """Load domain-specific payload packs."""
+    if domain == "flexcon":
+        from .payloads_flexcon import FLEXCON_PAYLOADS
+        return FLEXCON_PAYLOADS
+    return []
 
 
 def get_categories() -> list[str]:
