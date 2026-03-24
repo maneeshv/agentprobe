@@ -16,3 +16,4 @@ manthan-*.json
 manthan-*.log
 manual-probe.sh
 api-spec.md
+*.log

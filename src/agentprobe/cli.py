@@ -94,6 +94,8 @@ Examples:
                              help="Include domain-specific payloads (e.g. 'flexcon')")
     scan_parser.add_argument("--domain-only", action="store_true",
                              help="Only run domain-specific payloads (requires --domain)")
+    scan_parser.add_argument("--payloads-file", "-f", dest="payloads_file",
+                             help="Load custom payloads from a JSON/YAML file")
     scan_parser.add_argument("--timeout", type=float, default=60.0,
                              help="Request timeout in seconds (default: 60)")
     scan_parser.add_argument("--concurrency", type=int, default=2,
@@ -128,6 +130,8 @@ Examples:
                              help="Include domain-specific payloads (e.g. 'flexcon')")
     list_parser.add_argument("--domain-only", action="store_true",
                              help="Only show domain-specific payloads")
+    list_parser.add_argument("--payloads-file", "-f", dest="payloads_file",
+                             help="Load custom payloads from a JSON/YAML file")
 
     # === categories command ===
     subparsers.add_parser("categories", help="List payload categories")
@@ -143,12 +147,23 @@ Examples:
 
 def cmd_list(args: argparse.Namespace) -> None:
     """List payloads."""
+    extra = None
+    extra_only = False
+    pf = getattr(args, "payloads_file", None)
+    if pf:
+        from .payloads import load_payloads_from_file
+        extra = load_payloads_from_file(pf)
+        if not getattr(args, "domain", None):
+            extra_only = True
+
     payloads = get_payloads(
         category=args.category,
         severity=args.severity,
         tag=args.tag,
         include_domain=getattr(args, "domain", None),
         domain_only=getattr(args, "domain_only", False),
+        extra_payloads=extra,
+        extra_only=extra_only,
     )
 
     if args.as_json:
@@ -363,6 +378,18 @@ def cmd_scan(args: argparse.Namespace) -> None:
     domain = getattr(args, "domain", None) or config.get("domain")
     domain_only = getattr(args, "domain_only", False) or config.get("domain_only", False)
 
+    # Load external payloads
+    extra_payloads = None
+    extra_only = False
+    payloads_file = getattr(args, "payloads_file", None) or config.get("payloads_file")
+    if payloads_file:
+        from .payloads import load_payloads_from_file
+        extra_payloads = load_payloads_from_file(payloads_file)
+        _log(f"  Loaded {len(extra_payloads)} custom payloads from: {payloads_file}", log_f)
+        # If no domain and no built-in payloads requested, use only external
+        if not domain and not args.payloads:
+            extra_only = True
+
     # Run scan
     results = asyncio.run(scanner.scan(
         category=args.category,
@@ -372,6 +399,8 @@ def cmd_scan(args: argparse.Namespace) -> None:
         on_result=on_result,
         include_domain=domain,
         domain_only=domain_only,
+        extra_payloads=extra_payloads,
+        extra_only=extra_only,
     ))
 
     # Print report

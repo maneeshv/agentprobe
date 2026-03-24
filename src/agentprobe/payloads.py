@@ -428,19 +428,29 @@ def get_payloads(
     tag: str | None = None,
     include_domain: str | None = None,
     domain_only: bool = False,
+    extra_payloads: list["Payload"] | None = None,
+    extra_only: bool = False,
 ) -> list[Payload]:
     """Filter payloads by category, severity, tag, or domain pack.
 
     Args:
         include_domain: Include domain-specific payloads (e.g. "flexcon")
         domain_only: If True, only return domain-specific payloads
+        extra_payloads: Additional payloads loaded from external files
+        extra_only: If True, only use extra_payloads (ignore built-in)
     """
-    if domain_only and include_domain:
+    if extra_only and extra_payloads:
+        results = list(extra_payloads)
+    elif domain_only and include_domain:
         results = _get_domain_payloads(include_domain)
     elif include_domain:
         results = PAYLOADS + _get_domain_payloads(include_domain)
     else:
-        results = PAYLOADS
+        results = list(PAYLOADS)
+
+    # Append extras (unless extra_only already set them)
+    if extra_payloads and not extra_only:
+        results = results + list(extra_payloads)
 
     if category:
         results = [p for p in results if p.category == category]
@@ -457,6 +467,74 @@ def _get_domain_payloads(domain: str) -> list[Payload]:
         from .payloads_flexcon import FLEXCON_PAYLOADS
         return FLEXCON_PAYLOADS
     return []
+
+
+def load_payloads_from_file(path: str) -> list[Payload]:
+    """Load payloads from an external JSON or YAML file.
+
+    Expected format (JSON):
+    [
+      {
+        "name": "my-attack",
+        "category": "custom",
+        "prompt": "The injection text...",
+        "severity": "high",
+        "description": "What it does",
+        "tags": ["credential-leak"]
+      }
+    ]
+
+    Or with a top-level object:
+    {
+      "payloads": [ ... ],
+      "meta": { "name": "My Pack", "version": "1.0" }
+    }
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(path)
+    text = p.read_text()
+
+    if p.suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+            raw = yaml.safe_load(text)
+        except ImportError:
+            raise ImportError(
+                "PyYAML required for YAML payload files. "
+                "Install with: pip install pyyaml"
+            )
+    else:
+        raw = json.loads(text)
+
+    # Support both list and {payloads: [...]} formats
+    if isinstance(raw, dict):
+        items = raw.get("payloads", [])
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        raise ValueError(f"Invalid payload file format: expected list or object, got {type(raw).__name__}")
+
+    payloads = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        # Validate required fields
+        missing = [f for f in ("name", "prompt") if f not in item]
+        if missing:
+            raise ValueError(f"Payload missing required fields {missing}: {item.get('name', '?')}")
+
+        payloads.append(Payload(
+            name=item["name"],
+            category=item.get("category", "custom"),
+            prompt=item["prompt"],
+            severity=item.get("severity", "medium"),
+            description=item.get("description", ""),
+            tags=item.get("tags", []),
+        ))
+
+    return payloads
 
 
 def get_categories() -> list[str]:

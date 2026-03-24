@@ -317,6 +317,8 @@ class Scanner:
         on_result: Any = None,
         include_domain: str | None = None,
         domain_only: bool = False,
+        extra_payloads: list | None = None,
+        extra_only: bool = False,
     ) -> list[ScanResult]:
         """
         Run payloads against the endpoint.
@@ -329,6 +331,8 @@ class Scanner:
             on_result: Async callback(result) called after each payload
             include_domain: Include domain-specific payloads
             domain_only: Only use domain-specific payloads
+            extra_payloads: Additional payloads from external files
+            extra_only: Only use external payloads
 
         Returns:
             List of ScanResults
@@ -336,6 +340,7 @@ class Scanner:
         payloads = get_payloads(
             category=category, severity=severity, tag=tag,
             include_domain=include_domain, domain_only=domain_only,
+            extra_payloads=extra_payloads, extra_only=extra_only,
         )
         if names:
             payloads = [p for p in payloads if p.name in names]

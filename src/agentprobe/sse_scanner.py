@@ -274,11 +274,14 @@ class SSEScanner:
         on_result: Any = None,
         include_domain: str | None = None,
         domain_only: bool = False,
+        extra_payloads: list | None = None,
+        extra_only: bool = False,
     ) -> list[ScanResult]:
         """Run payloads against the SSE endpoint."""
         payloads = get_payloads(
             category=category, severity=severity, tag=tag,
             include_domain=include_domain, domain_only=domain_only,
+            extra_payloads=extra_payloads, extra_only=extra_only,
         )
         if names:
             payloads = [p for p in payloads if p.name in names]
