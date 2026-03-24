@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Convenience wrapper — runs agentprobe from the venv
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/.venv/bin/agentprobe" "$@"
