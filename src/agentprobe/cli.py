@@ -163,6 +163,8 @@ Examples:
     attack_parser.add_argument("--description", dest="target_description",
                                default="An AI assistant",
                                help="Description of the target agent for the attacker LLM")
+    attack_parser.add_argument("--strategy", dest="strategy",
+                               help="Additional attack strategy instructions for the attacker LLM (text or @file path)")
     attack_parser.add_argument("--attacker-provider", dest="attacker_provider",
                                choices=["openai", "openrouter", "anthropic", "grok", "xai",
                                         "gemini", "google", "together", "groq", "deepseek", "fireworks"],
@@ -489,6 +491,17 @@ def cmd_scan(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _load_strategy(args: argparse.Namespace) -> str:
+    """Load strategy from --strategy (inline text or @filepath)."""
+    raw = getattr(args, "strategy", None)
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        with open(raw[1:]) as f:
+            return f.read()
+    return raw
+
+
 def cmd_attack(args: argparse.Namespace) -> None:
     """Run an adaptive LLM-powered attack."""
     from .adaptive import AdaptiveScanner
@@ -598,6 +611,7 @@ def cmd_attack(args: argparse.Namespace) -> None:
         target_mode="sse" if use_sse else "json",
         target_new_conversation_endpoint=new_conv,
         target_description=args.target_description or config.get("target_description", "An AI assistant"),
+        extra_strategy=_load_strategy(args),
         attacker_provider=args.attacker_provider,
         attacker_api_base=args.attacker_api_base or "https://openrouter.ai/api/v1",
         attacker_api_key=attacker_key,

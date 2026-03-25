@@ -46,6 +46,9 @@ STRATEGIES TO TRY:
 CONVERSATION HISTORY WITH TARGET:
 {history}
 
+ADDITIONAL STRATEGY:
+{extra_strategy}
+
 RULES:
 - You send ONE message at a time. Make it count.
 - Analyze the target's previous responses for clues about what might work.
@@ -133,6 +136,7 @@ class AdaptiveScanner:
         target_mode: str = "sse",  # "sse" or "json"
         target_new_conversation_endpoint: str | None = None,
         target_description: str = "An AI assistant",
+        extra_strategy: str = "",
         # Attacker LLM config
         attacker_provider: str | None = None,
         attacker_api_base: str = "https://openrouter.ai/api/v1",
@@ -158,6 +162,7 @@ class AdaptiveScanner:
         self.target_mode = target_mode
         self.target_new_conv_endpoint = target_new_conversation_endpoint
         self.target_description = target_description
+        self.extra_strategy = extra_strategy or "(No additional strategy)"
 
         # Build attacker LLM via provider abstraction
         from .providers import AttackerLLM
@@ -193,8 +198,8 @@ class AdaptiveScanner:
         url = endpoint or self.target_endpoint
         body = self._build_target_body(prompt)
 
-        # For new conversation endpoint, use flat body format
-        if url == self.target_new_conv_endpoint:
+        # New conversation endpoint uses flat body format (no params wrapper)
+        if self.target_new_conv_endpoint and url == self.target_new_conv_endpoint:
             body = {
                 "question": prompt,
                 "event": "textbox",
@@ -261,6 +266,7 @@ class AdaptiveScanner:
         system_prompt = ATTACKER_SYSTEM_PROMPT.format(
             target_description=self.target_description,
             history=hist_text if hist_text else "(No conversation yet — this is your first message)",
+            extra_strategy=self.extra_strategy,
         )
 
         response = await self.attacker.chat(
@@ -335,9 +341,10 @@ class AdaptiveScanner:
         if self.target_cookie:
             target_headers["Cookie"] = self.target_cookie
 
-        # Determine conversation endpoint
-        # Start with new conversation endpoint, then switch to resume
-        conv_endpoint = self.target_new_conv_endpoint or self.target_endpoint
+        # Conversation flow:
+        # Turn 1: new_conv_endpoint (no ID) → get thread_id from response
+        # Turn 2+: new_conv_endpoint/{thread_id} (resume conversation)
+        first_endpoint = self.target_new_conv_endpoint or self.target_endpoint
         resume_endpoint = None
 
         async with httpx.AsyncClient(headers=target_headers) as target_client:
@@ -348,16 +355,15 @@ class AdaptiveScanner:
                         probe = await self._ask_attacker(attacker_client, history)
 
                         # 2. Send to target
-                        use_endpoint = resume_endpoint or conv_endpoint
+                        use_endpoint = resume_endpoint or first_endpoint
                         target_response, elapsed, thread_id = await self._send_to_target(
                             target_client, probe, use_endpoint,
                         )
 
-                        # If we got a thread_id and have a base endpoint, switch to resume
-                        if thread_id and not resume_endpoint and self.target_new_conv_endpoint:
-                            resume_endpoint = self.target_endpoint.rstrip("/")
-                            if not resume_endpoint.endswith(thread_id):
-                                resume_endpoint = f"{resume_endpoint}/{thread_id}"
+                        # After first turn, build resume endpoint from thread_id
+                        if thread_id and not resume_endpoint:
+                            base = (self.target_new_conv_endpoint or self.target_endpoint).rstrip("/")
+                            resume_endpoint = f"{base}/{thread_id}"
 
                         # 3. Analyze response
                         findings, refused = analyze_response(target_response)
