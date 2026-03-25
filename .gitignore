@@ -7,3 +7,13 @@ build/
 .venv/
 *.egg
 .eggs/
+
+# Scan results & local configs
+*-results.json
+*-config.json
+*-scan.log
+manthan-*.json
+manthan-*.log
+manual-probe.sh
+api-spec.md
+*.log
