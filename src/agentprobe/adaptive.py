@@ -207,6 +207,17 @@ class AdaptiveScanner:
                 "product_recommender": True,
                 "meta_context": {"local_time": "2026-01-01T12:00:00+00:00"},
             }
+        # Resume endpoint uses params wrapper format
+        elif self.target_new_conv_endpoint and url != self.target_new_conv_endpoint and url != self.target_endpoint:
+            body = {
+                "event": "textbox",
+                "params": {
+                    "question": prompt,
+                    "thinking_mode": "quick",
+                },
+                "product_recommender": True,
+                "meta_context": {"local_time": "2026-01-01T12:00:00+00:00"},
+            }
 
         start = time.monotonic()
         thread_id = None
@@ -392,6 +403,22 @@ class AdaptiveScanner:
                             await asyncio.sleep(self.delay)
 
                     except Exception as e:
+                        # Retry transient errors (DNS, connection) up to 3 times
+                        retryable = any(s in str(e).lower() for s in [
+                            "nodename nor servname", "connect", "timeout",
+                            "connection reset", "broken pipe", "eof",
+                            "temporary failure", "name resolution",
+                        ])
+                        if retryable and not hasattr(self, '_retry_counts'):
+                            self._retry_counts = {}
+                        if retryable:
+                            self._retry_counts[turn_num] = self._retry_counts.get(turn_num, 0) + 1
+                            if self._retry_counts[turn_num] <= 3:
+                                import sys
+                                print(f"  ⚠️  Turn {turn_num}: transient error ({type(e).__name__}), retrying in 10s... (attempt {self._retry_counts[turn_num]}/3)", flush=True)
+                                await asyncio.sleep(10)
+                                continue  # Retry same turn
+                        # Non-retryable or exhausted retries
                         turn = AdaptiveTurn(
                             turn=turn_num,
                             attacker_prompt=probe if 'probe' in dir() else "[error before probe]",

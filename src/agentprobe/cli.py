@@ -613,7 +613,7 @@ def cmd_attack(args: argparse.Namespace) -> None:
         target_description=args.target_description or config.get("target_description", "An AI assistant"),
         extra_strategy=_load_strategy(args),
         attacker_provider=args.attacker_provider,
-        attacker_api_base=args.attacker_api_base or "https://openrouter.ai/api/v1",
+        attacker_api_base=args.attacker_api_base,
         attacker_api_key=attacker_key,
         attacker_model=args.attacker_model,
         max_turns=args.turns,
